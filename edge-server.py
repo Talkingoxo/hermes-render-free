@@ -111,6 +111,22 @@ def _ensure_omniroute() -> None:
         raise HTTPException(status_code=503, detail="OmniRoute failed to start")
 
 
+def _stop_omniroute() -> None:
+    global _omniroute_process
+    process = _omniroute_process
+    _omniroute_process = None
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=10)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
 def _proxy_omniroute(path: str, method: str, body: bytes | None = None) -> Response:
     _ensure_omniroute()
     target = f"{_OMNIROUTE_URL}/{path.lstrip('/')}"
@@ -136,6 +152,8 @@ def _proxy_omniroute(path: str, method: str, body: bytes | None = None) -> Respo
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"OmniRoute proxy error: {exc}") from exc
+    finally:
+        _stop_omniroute()
 
 
 @app.get("/")
