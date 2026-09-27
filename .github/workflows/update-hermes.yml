@@ -1,0 +1,44 @@
+name: Track upstream Hermes
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve official Hermes latest digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(curl -fsSL 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:nousresearch/hermes-agent:pull' | jq -r .token)"
+          digest="$(curl -fsSI \
+            -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            'https://registry-1.docker.io/v2/nousresearch/hermes-agent/manifests/latest' \
+            | tr -d '\r' \
+            | awk 'tolower($1)=="docker-content-digest:" {print $2}' \
+            | tail -1)"
+          test -n "$digest"
+          echo "$digest" > .hermes-image-digest
+
+      - name: Commit changed digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- .hermes-image-digest; then
+            echo "Hermes image is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .hermes-image-digest
+          git commit -m "chore: refresh Hermes latest image"
+          git push
