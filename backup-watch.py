@@ -1,14 +1,18 @@
 #!/opt/hermes/.venv/bin/python
 import os
+import queue
 import subprocess
+import threading
 from pathlib import Path
 
 from watchfiles import watch
 
 DATA_DIR = Path(os.environ.get("HERMES_HOME", "/opt/data")).resolve()
-DEBOUNCE_MS = max(1_000, int(os.environ.get("HERMES_BACKUP_DEBOUNCE_SECONDS", "60")) * 1_000)
+QUIET_SECONDS = max(1, int(os.environ.get("HERMES_BACKUP_DEBOUNCE_SECONDS", "60")))
 IGNORED_TOP_LEVEL = {"logs", "cache"}
 IGNORED_NAMES = {"agent.log", "agent.log.1", "agent.log.2"}
+
+events: queue.Queue[object] = queue.Queue()
 
 def relevant(path: str) -> bool:
     try:
@@ -19,26 +23,33 @@ def relevant(path: str) -> bool:
         return False
     if rel.parts[0] in IGNORED_TOP_LEVEL:
         return False
-    if rel.name in IGNORED_NAMES:
+    if rel.name in IGNORED_NAMES or rel.name.startswith(".spawn-ledger"):
         return False
     return True
 
-print(f"Watching {DATA_DIR} for backup-worthy changes (debounce={DEBOUNCE_MS // 1000}s).", flush=True)
+def producer() -> None:
+    for changes in watch(DATA_DIR, recursive=True, raise_interrupt=False):
+        if any(relevant(path) for _, path in changes):
+            events.put(object())
 
-for changes in watch(
-    DATA_DIR,
-    recursive=True,
-    debounce=DEBOUNCE_MS,
-    step=1_000,
-    raise_interrupt=False,
-):
-    if not any(relevant(path) for _, path in changes):
-        continue
+threading.Thread(target=producer, name="hermes-backup-events", daemon=True).start()
+print(f"Watching {DATA_DIR} for backup-worthy changes (quiet period={QUIET_SECONDS}s).", flush=True)
+
+while True:
+    events.get()
+    while True:
+        try:
+            events.get(timeout=QUIET_SECONDS)
+        except queue.Empty:
+            break
+
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["/usr/local/bin/hermes-backup", "save"],
             check=False,
             timeout=180,
         )
+        if result.returncode != 0:
+            print(f"Hermes backup exited with status {result.returncode}", flush=True)
     except Exception as exc:
         print(f"Hermes backup watcher error: {exc}", flush=True)
