@@ -90,7 +90,7 @@ def _ensure_omniroute() -> None:
         env = os.environ.copy()
         env["HOME"] = os.environ.get("HERMES_HOME", "/opt/data")
         env["OMNIROUTE_HOST"] = "127.0.0.1"
-        env["OMNIROUTE_MEMORY_MB"] = os.environ.get("OMNIROUTE_MEMORY_MB", "384")
+        env["OMNIROUTE_MEMORY_MB"] = os.environ.get("OMNIROUTE_MEMORY_MB", "256")
 
         _omniroute_process = subprocess.Popen(
             ["omniroute", "--no-open", "--port", "20128"],
