@@ -7,15 +7,20 @@ TOKEN="${HERMES_BACKUP_TOKEN:-}"
 
 [ -n "$BASE_URL" ] && [ -n "$TOKEN" ] || exit 0
 
+CURL_COMMON="--connect-timeout 5 --max-time 30"
+
 case "${1:-}" in
   restore)
     archive="$(mktemp)"
-    if curl -fsS \
+    echo "Restoring Hermes state from R2..."
+    if curl -fsS $CURL_COMMON \
       -H "Authorization: Bearer $TOKEN" \
       "$BASE_URL/backup/latest.tar.gz" \
       -o "$archive"; then
       tar -xzf "$archive" -C "$DATA_DIR"
       echo "Restored Hermes state from R2."
+    else
+      echo "No backup restored; continuing startup." >&2
     fi
     rm -f "$archive"
     ;;
@@ -24,7 +29,6 @@ case "${1:-}" in
     work="$(mktemp -d)"
     mkdir -p "$work/data"
 
-    # Copy ordinary state, but snapshot SQLite separately so WAL-mode data is consistent.
     tar -C "$DATA_DIR" \
       --exclude='./state.db' \
       --exclude='./state.db-wal' \
@@ -47,7 +51,7 @@ PY
     fi
 
     tar -czf "$work/latest.tar.gz" -C "$work/data" .
-    curl -fsS -X PUT \
+    curl -fsS $CURL_COMMON -X PUT \
       -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/gzip" \
       --data-binary @"$work/latest.tar.gz" \
