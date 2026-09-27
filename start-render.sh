@@ -3,10 +3,13 @@ set -eu
 
 changed=0
 
+echo "Hermes headless startup beginning..."
+
 if [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
   /usr/local/bin/hermes-backup restore || true
 fi
 
+echo "Sanitizing Hermes configuration..."
 set +e
 /usr/local/bin/hermes-sanitize-config
 sanitize_status=$?
