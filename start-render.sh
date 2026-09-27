@@ -1,18 +1,31 @@
 #!/bin/sh
 set -eu
 
-if [ -n "${HERMES_BACKUP_TOKEN:-}" ] && [ -z "${HERMES_DASHBOARD_DRAIN_SECRET:-}" ]; then
-  export HERMES_DASHBOARD_DRAIN_SECRET="$HERMES_BACKUP_TOKEN"
-fi
+changed=0
 
 if [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
   /usr/local/bin/hermes-backup restore || true
+fi
+
+set +e
+/usr/local/bin/hermes-sanitize-config
+sanitize_status=$?
+set -e
+
+if [ "$sanitize_status" -eq 42 ]; then
+  changed=1
+elif [ "$sanitize_status" -ne 0 ]; then
+  echo "Hermes config sanitization failed with status $sanitize_status" >&2
+  exit "$sanitize_status"
+fi
+
+if [ "$changed" -eq 1 ] && [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
+  /usr/local/bin/hermes-backup save || true
+fi
+
+if [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
   /usr/local/bin/hermes-backup-watch &
 fi
 
-echo "Starting Hermes dashboard directly on port 10000..."
-exec /opt/hermes/.venv/bin/hermes dashboard \
-  --host 0.0.0.0 \
-  --port 10000 \
-  --no-open \
-  --skip-build
+echo "Starting headless Hermes native executor on port ${PORT:-10000}..."
+exec /usr/local/bin/hermes-edge-server
