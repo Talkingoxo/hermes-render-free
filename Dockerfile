@@ -12,7 +12,9 @@ RUN install -d -o hermes -g hermes -m 0755 /opt/data \
 COPY start-render.sh /usr/local/bin/hermes-render-start
 COPY backup.sh /usr/local/bin/hermes-backup
 COPY backup-watch.py /usr/local/bin/hermes-backup-watch
-RUN chmod 0755 /usr/local/bin/hermes-render-start /usr/local/bin/hermes-backup /usr/local/bin/hermes-backup-watch
+COPY edge-executor/ /opt/hermes/plugins/hermes-edge-executor/
+RUN chmod 0755 /usr/local/bin/hermes-render-start /usr/local/bin/hermes-backup /usr/local/bin/hermes-backup-watch \
+ && chown -R hermes:hermes /opt/hermes/plugins/hermes-edge-executor
 
 ENV HERMES_HOME=/opt/data
 ENV HOME=/opt/data
