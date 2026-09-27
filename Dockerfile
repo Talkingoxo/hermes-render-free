@@ -11,7 +11,8 @@ RUN install -d -o hermes -g hermes -m 0755 /opt/data \
 
 COPY start-render.sh /usr/local/bin/hermes-render-start
 COPY backup.sh /usr/local/bin/hermes-backup
-RUN chmod 0755 /usr/local/bin/hermes-render-start /usr/local/bin/hermes-backup
+COPY backup-watch.py /usr/local/bin/hermes-backup-watch
+RUN chmod 0755 /usr/local/bin/hermes-render-start /usr/local/bin/hermes-backup /usr/local/bin/hermes-backup-watch
 
 ENV HERMES_HOME=/opt/data
 ENV HOME=/opt/data
