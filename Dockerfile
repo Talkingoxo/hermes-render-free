@@ -10,6 +10,7 @@ RUN install -d -o hermes -g hermes -m 0755 /opt/data \
  && if [ -d /opt/hermes/plugins/platforms ]; then \
       find /opt/hermes/plugins/platforms -mindepth 1 -maxdepth 1 -type d ! -name telegram -exec rm -rf {} +; \
     fi \
+ && npm install -g omniroute@3.8.50 \
  && chown -R hermes:hermes /opt/data \
  && chmod 600 /opt/data/.env
 
