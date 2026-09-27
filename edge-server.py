@@ -22,7 +22,6 @@ _ALLOWED_TOOLSETS = ["terminal", "file", "browser", "code_execution", "vision"]
 _OMNIROUTE_URL = "http://127.0.0.1:20128"
 _omniroute_lock = threading.Lock()
 _omniroute_process: subprocess.Popen | None = None
-_omniroute_bootstrapped = False
 
 
 class ExecuteRequest(BaseModel):
@@ -74,46 +73,14 @@ def _omniroute_alive() -> bool:
         return False
 
 
-def _bootstrap_free_provider() -> None:
-    global _omniroute_bootstrapped
-    if _omniroute_bootstrapped:
-        return
-
-    env = os.environ.copy()
-    env["HOME"] = os.environ.get("HERMES_HOME", "/opt/data")
-    commands = [
-        ["omniroute", "providers", "add", "pollinations", "--credential", "free", "--name", "free-test"],
-    ]
-    for command in commands:
-        try:
-            result = subprocess.run(
-                command,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            print(f"OmniRoute provider bootstrap exit={result.returncode}", flush=True)
-            if result.stdout:
-                print(result.stdout[-1200:], flush=True)
-        except Exception as exc:
-            print(f"OmniRoute provider bootstrap warning: {exc}", flush=True)
-
-    _omniroute_bootstrapped = True
-
-
 def _ensure_omniroute() -> None:
     global _omniroute_process
 
     if _omniroute_alive():
-        _bootstrap_free_provider()
         return
 
     with _omniroute_lock:
         if _omniroute_alive():
-            _bootstrap_free_provider()
             return
 
         log_dir = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "logs"
@@ -123,6 +90,7 @@ def _ensure_omniroute() -> None:
         env = os.environ.copy()
         env["HOME"] = os.environ.get("HERMES_HOME", "/opt/data")
         env["OMNIROUTE_HOST"] = "127.0.0.1"
+        env["OMNIROUTE_MEMORY_MB"] = os.environ.get("OMNIROUTE_MEMORY_MB", "384")
 
         _omniroute_process = subprocess.Popen(
             ["omniroute", "--no-open", "--port", "20128"],
@@ -135,7 +103,6 @@ def _ensure_omniroute() -> None:
         deadline = time.time() + 45
         while time.time() < deadline:
             if _omniroute_alive():
-                _bootstrap_free_provider()
                 return
             if _omniroute_process.poll() is not None:
                 break
