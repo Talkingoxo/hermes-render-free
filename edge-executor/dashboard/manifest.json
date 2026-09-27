@@ -1,0 +1,10 @@
+{
+  "name": "hermes-edge-executor",
+  "label": "Hermes Edge Executor",
+  "description": "Authenticated native-tool bridge for the Cloudflare Hermes edge.",
+  "icon": "Terminal",
+  "version": "0.1.0",
+  "tab": { "path": "/edge-executor", "hidden": true },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
