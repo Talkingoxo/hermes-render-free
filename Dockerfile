@@ -8,7 +8,7 @@ RUN install -d -o hermes -g hermes -m 0755 /opt/data \
  && touch /opt/data/.env \
  && rm -rf /opt/hermes/hermes_cli/web_dist /opt/hermes/ui-tui \
  && if [ -d /opt/hermes/plugins/platforms ]; then \
-      find /opt/hermes/plugins/platforms -mindepth 1 -maxdepth 1 -type d ! -name telegram -exec rm -rf {} +; \
+      find /opt/hermes/plugins/platforms -mindepth 1 -maxdepth 1 -type d ! -name telegram ! -name signal -exec rm -rf {} +; \
     fi \
  && npm install -g omniroute@3.8.50 \
  && chown -R hermes:hermes /opt/data \
