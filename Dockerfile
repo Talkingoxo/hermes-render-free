@@ -6,7 +6,7 @@ RUN install -d -o hermes -g hermes -m 0755 /opt/data \
  && printf 'gateway:\n  platforms: {}\n' > /opt/data/config.yaml \
  && cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
  && touch /opt/data/.env \
- && rm -rf /opt/hermes/hermes_cli/web_dist /opt/hermes/ui-tui \
+ && rm -rf /opt/hermes/hermes_cli/web_dist /opt/hermes/ui-tui /opt/hermes/web /opt/hermes/website \
  && if [ -d /opt/hermes/plugins/platforms ]; then \
       find /opt/hermes/plugins/platforms -mindepth 1 -maxdepth 1 -type d ! -name telegram ! -name signal -exec rm -rf {} +; \
     fi \
