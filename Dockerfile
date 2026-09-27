@@ -10,7 +10,8 @@ RUN install -d -o hermes -g hermes -m 0755 /opt/data \
  && chmod 600 /opt/data/.env
 
 COPY start-render.sh /usr/local/bin/hermes-render-start
-RUN chmod 0755 /usr/local/bin/hermes-render-start
+COPY backup.sh /usr/local/bin/hermes-backup
+RUN chmod 0755 /usr/local/bin/hermes-render-start /usr/local/bin/hermes-backup
 
 ENV HERMES_HOME=/opt/data
 ENV HOME=/opt/data
