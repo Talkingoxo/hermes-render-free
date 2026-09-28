@@ -17,7 +17,7 @@ const DEFAULT_MODELS=Object.freeze([
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
   "@cf/meta/llama-3.1-8b-instruct-fast"
 ]);
-const acceptsFreeModel=name=>!name||["auto","free-models","free","cloudflare","workers-ai"].includes(name)||name.startsWith("@cf/")||name==="openrouter"||name==="gemini"||name.startsWith("openrouter/")||name.startsWith("gemini/");
+const acceptsFreeModel=name=>!name||["auto","free-models","free","cloudflare","workers-ai"].includes(name)||DEFAULT_MODELS.includes(name)||name==="openrouter"||name==="gemini"||name.startsWith("openrouter/")||name.startsWith("gemini/");
 function modelCompletion(request,content,model,provider,usage=null){
   const id="chatcmpl-free-"+crypto.randomUUID(),created=Math.floor(Date.now()/1000);
   const answer={id,object:"chat.completion",created,model,provider,choices:[{index:0,message:{role:"assistant",content},finish_reason:"stop"}],usage};
@@ -33,7 +33,7 @@ export async function runFreeModels(env,payload){
   if(!acceptsFreeModel(requested))return null;
   if(!Array.isArray(payload?.messages)||!payload.messages.length||payload.messages.length>50)return reply({error:"Provide 1-50 messages"},400);
   const maxTokens=Math.min(Math.max(Number(payload.max_tokens)||512,1),2048);
-  const explicit=requested.startsWith("@cf/")||requested==="openrouter"||requested.startsWith("openrouter/")||requested==="gemini"||requested.startsWith("gemini/");
+  const explicit=DEFAULT_MODELS.includes(requested)||requested==="openrouter"||requested.startsWith("openrouter/")||requested==="gemini"||requested.startsWith("gemini/");
   const candidates=explicit?[requested]:[...DEFAULT_MODELS,"openrouter","gemini"];
   const attempts=[];
   let quotaExhausted=false,settings=null;
