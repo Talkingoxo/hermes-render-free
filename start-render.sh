@@ -30,5 +30,18 @@ if [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
   /usr/local/bin/hermes-backup-watch &
 fi
 
+# The official Hermes image stages Chromium under /opt/hermes/tools.
+# Our headless entrypoint bypasses its normal s6 stage2 bootstrap, so
+# explicitly export the pinned executable path for browser-use/agent-browser.
+if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && [ -r /etc/hermes/agent-browser-executable-path ]; then
+  export AGENT_BROWSER_EXECUTABLE_PATH="$(cat /etc/hermes/agent-browser-executable-path)"
+fi
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/hermes/tools}"
+if [ -n "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && [ -x "$AGENT_BROWSER_EXECUTABLE_PATH" ]; then
+  echo "Hermes packaged Chromium ready."
+else
+  echo "WARNING: Hermes packaged Chromium binary not detected." >&2
+fi
+
 echo "Starting headless Hermes native executor on port ${PORT:-10000}..."
 exec /usr/local/bin/hermes-edge-server
