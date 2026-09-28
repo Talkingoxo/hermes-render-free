@@ -13,6 +13,10 @@ const bearerOk = (request, env) => {
   return request.headers.get("authorization") === `Bearer ${expected}`;
 };
 
+const readJson = async (request) => {
+  try { return await request.json(); } catch { return undefined; }
+};
+
 const normalizeLimit = (value, fallback = 100) => {
   const n = Number.parseInt(value || "", 10);
   return Number.isFinite(n) ? Math.min(Math.max(n, 1), 500) : fallback;
@@ -90,7 +94,7 @@ export class HermesState extends DurableObject {
     }
 
     if (request.method === "POST" && url.pathname.endsWith("/messages")) {
-      const body = await request.json();
+      const body = await readJson(request);
       if (!body || typeof body.role !== "string" || body.content == null) {
         return json({ error: "role and content are required" }, 400);
       }
@@ -99,30 +103,37 @@ export class HermesState extends DurableObject {
 
 
     if (request.method === "POST" && url.pathname.endsWith("/chat")) {
-      const body = await request.json();
+      const body = await readJson(request);
       if (!body || body.content == null) {
         return json({ error: "content is required" }, 400);
       }
 
-      const userMessage = this._append("user", body.content, body.metadata ?? null);
-      const historyLimit = normalizeLimit(String(body.history_limit ?? 40), 40);
+      // Nothing is written until the turn succeeds: a Workflow retry of a failed
+      // turn must not leave duplicated user messages behind.
+      // 49 history rows + this turn stays inside the router's 50-message limit.
+      const historyLimit = Math.min(normalizeLimit(String(body.history_limit ?? 40), 40), 49);
       const rows = this.sql.exec(
         "SELECT role, content FROM messages ORDER BY id DESC LIMIT ?",
         historyLimit
       ).toArray().reverse();
 
-      const payload={model:body.model||"auto",messages:rows.map(r=>({role:r.role,content:r.content})),stream:false,max_tokens:Math.min(Math.max(Number(body.max_tokens)||512,1),2048)};
+      const messages=[...rows.map(r=>({role:r.role,content:r.content})),{role:"user",content:String(body.content)}];
+      const payload={model:body.model||"auto",messages,stream:false,max_tokens:Math.min(Math.max(Number(body.max_tokens)||512,1),2048)};
+      const configured=!!(this.env.MODEL_BASE_URL&&this.env.MODEL_API_KEY);
       let upstream=await runFreeModels(this.env,payload);
-      if(!upstream){
-        if(!this.env.MODEL_BASE_URL||!this.env.MODEL_API_KEY)return json({error:"Unknown model; use auto or a connected free model"},400);
+      // 503 means every free model is unavailable, so a configured provider is still worth trying.
+      if((!upstream||upstream.status===503)&&configured){
         const base=String(this.env.MODEL_BASE_URL).replace(/\/$/,"");
         upstream=await fetch(base.endsWith("/v1")?base+"/chat/completions":base+"/v1/chat/completions",{
           method:"POST",headers:{authorization:"Bearer "+this.env.MODEL_API_KEY,"content-type":"application/json"},body:JSON.stringify(payload)});
+      }else if(!upstream){
+        return json({error:"Unknown model; use auto or a connected free model"},400);
       }
       const result=await upstream.json().catch(()=>({}));
       if(!upstream.ok)return json({error:result.error||"No free model available",attempts:result.attempts||[],status:upstream.status},upstream.status);
       const msg=result.choices?.[0]?.message;
       if(typeof msg?.content!=="string"||!msg.content.trim())return json({error:"Model returned no text"},502);
+      const userMessage=this._append("user",body.content,body.metadata??null);
       const assistant=this._append("assistant",msg.content,{provider:result.provider||"configured",model:result.model||payload.model,tool_calls:msg.tool_calls||null});
       return json({user:userMessage,assistant,usage:result.usage||null});
     }
@@ -138,7 +149,7 @@ export class HermesState extends DurableObject {
     }
 
     if (request.method === "PUT" && url.pathname.endsWith("/state")) {
-      const body = await request.json();
+      const body = await readJson(request);
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json({ error: "JSON object required" }, 400);
       }
@@ -195,9 +206,21 @@ export class HermesTaskWorkflow extends WorkflowEntrypoint {
 
     if (params.action === "native_catalog" || params.action === "native_tool") {
       const action = params.action;
+      // Render Free spins the executor down when idle. Absorb that cold start in a
+      // retried, side-effect-free step so the tool call itself still runs exactly once.
+      await step.do("wake Render executor", {
+        retries: {limit: 4, delay: "5 seconds", backoff: "linear"},
+        timeout: "1 minute",
+      }, async () => {
+        const origin = String(this.env.RENDER_ORIGIN || "").replace(/\/$/, "");
+        if (!origin) throw new Error("Render origin is not configured");
+        const res = await fetch(origin + "/api/status", {headers: {accept: "application/json"}});
+        if (!res.ok) throw new Error("Render executor not ready (" + res.status + ")");
+        return {ready: true};
+      });
       const response = await step.do("on-demand Render tool", {
         retries: {limit: action === "native_tool" ? 0 : 1, delay: "2 seconds"},
-        timeout: "2 minutes",
+        timeout: "5 minutes",
       }, async () => {
         const origin = String(this.env.RENDER_ORIGIN || "").replace(/\/$/, "");
         if (!origin) throw new Error("Render origin is not configured");
@@ -256,9 +279,9 @@ async function routeSession(request, env, url) {
   if (!bearerOk(request, env)) return new Response("Unauthorized", { status: 401 });
   const id = decodeURIComponent(match[1]);
   const stub = env.HERMES_STATE.getByName(id);
-  const target = new URL(request.url);
-  target.hostname = "state.internal";
-  return stub.fetch(new Request(target.toString(), request));
+  // Pass the request through untouched: re-wrapping it in new Request() loses the
+  // WebSocket upgrade, and the Durable Object matches on the path suffix anyway.
+  return stub.fetch(request);
 }
 
 
@@ -294,8 +317,10 @@ async function proxyModel(request,env){
   if(!bearerOk(request,env))return new Response("Unauthorized",{status:401});
   let payload;try{payload=await request.json()}catch{return json({error:"Invalid JSON"},400)}
   const routed=await runFreeModels(env,payload);
-  if(routed)return routed;
-  if(!env.MODEL_BASE_URL||!env.MODEL_API_KEY)return json({error:"Unknown model; choose auto or configure a provider"},400);
+  const configured=!!(env.MODEL_BASE_URL&&env.MODEL_API_KEY);
+  // A 503 means no free model answered; only then is a configured provider tried.
+  if(routed&&(routed.status!==503||!configured))return routed;
+  if(!configured)return json({error:"Unknown model; choose auto or configure a provider"},400);
   const base=String(env.MODEL_BASE_URL).replace(/\/$/,"");
   const target=base.endsWith("/v1")?base+"/chat/completions":base+"/v1/chat/completions";
   const upstream=await fetch(target,{method:"POST",headers:{authorization:"Bearer "+env.MODEL_API_KEY,"content-type":"application/json"},body:JSON.stringify(payload)});
@@ -310,8 +335,8 @@ function browserCommand(socket,method,params={}) {
     const clean=()=>{clearTimeout(timer);socket.removeEventListener("message",onMessage);socket.removeEventListener("close",onClose);};
     const onClose=()=>{clean();reject(new Error("Browser connection closed"));};
     const onMessage=event=>{
-      const msg=JSON.parse(event.data);
-      if(msg.id!==id)return;
+      let msg;try{msg=JSON.parse(event.data);}catch{return;}
+      if(msg?.id!==id)return;
       clean();
       if(msg.error)reject(new Error(msg.error.message));else resolve(msg.result);
     };
@@ -325,7 +350,9 @@ async function cloudflareBrowserContent(env,urlText) {
   if(!["https:","http:"].includes(url.protocol))throw new Error("HTTP(S) URL required");
   if(url.username||url.password)throw new Error("URL credentials not accepted");
   const host=url.hostname.toLowerCase();
-  if(["localhost","127.0.0.1","::1","0.0.0.0","169.254.169.254"].includes(host)||host.endsWith(".local")||host.endsWith(".internal")||/^(10|127|192\.168)\./.test(host)||/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)||/^169\.254\./.test(host))throw new Error("Private target denied");
+  if(["localhost","127.0.0.1","::1","[::1]","0.0.0.0","169.254.169.254"].includes(host)||host.endsWith(".local")||host.endsWith(".internal")||/^(10|127|192\.168)\./.test(host)||/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)||/^169\.254\./.test(host)
+    // Bare integers (http://2130706433/) and IPv6 literals also resolve to internal addresses.
+    ||/^\d+$/.test(host)||/^0[xX]/.test(host)||/^\[/.test(host)&&/^\[(::|::1|fe80:|fc|fd|0*:)/.test(host))throw new Error("Private target denied");
   let sessionId=null,socket=null;
   try{
     const session=await env.BROWSER.acquire({keepAlive:30000});
@@ -395,24 +422,32 @@ export default {
     }
         if (url.pathname === "/api/tasks" && request.method === "POST") {
       if (!bearerOk(request, env)) return new Response("Unauthorized", { status: 401 });
-      const body = await request.json();
+      const body = await readJson(request);
       if (!body || body.content == null) return json({ error: "content is required" }, 400);
       const id = body.id || crypto.randomUUID();
-      const instance = await env.HERMES_TASKS.create({
-        id,
-        params: {
-          session_id: body.session_id || id,
-          content: body.content,
-          model: body.model || null,
-        },
-      });
+      let instance;
+      try {
+        instance = await env.HERMES_TASKS.create({
+          id,
+          params: {
+            session_id: body.session_id || id,
+            content: body.content,
+            model: body.model || null,
+          },
+        });
+      } catch (err) {
+        // A caller-supplied id that already exists must not surface as a 500.
+        return json({ error: "Task could not be created", detail: String(err).slice(0, 300) }, 409);
+      }
       return json({ id: instance.id, status: await instance.status() }, 202);
     }
 
     const taskMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)$/);
     if (taskMatch && request.method === "GET") {
       if (!bearerOk(request, env)) return new Response("Unauthorized", { status: 401 });
-      const instance = await env.HERMES_TASKS.get(decodeURIComponent(taskMatch[1]));
+      let instance;
+      try { instance = await env.HERMES_TASKS.get(decodeURIComponent(taskMatch[1])); }
+      catch { return json({ error: "Task not found" }, 404); }
       return json({ id: instance.id, status: await instance.status() });
     }
 

@@ -29,7 +29,10 @@ def _authorized(request: Request) -> bool:
     token = os.environ.get("HERMES_EDGE_TOKEN") or os.environ.get("HERMES_BACKUP_TOKEN") or ""
     supplied = request.headers.get("authorization", "")
     expected = f"Bearer {token}" if token else ""
-    return bool(expected) and hmac.compare_digest(supplied, expected)
+    if not expected:
+        return False
+    # Compare as bytes: a non-ASCII header would make compare_digest raise (HTTP 500).
+    return hmac.compare_digest(supplied.encode("utf-8", "ignore"), expected.encode("utf-8"))
 
 
 def _require_auth(request: Request) -> None:

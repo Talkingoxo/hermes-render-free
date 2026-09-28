@@ -4,9 +4,9 @@ This repository drives **one** Cloudflare `hermes` Worker and **one** headless R
 
 ## Automated upstream refresh
 
-`.github/workflows/update-hermes.yml` runs daily and can be started manually. It checks the official `nousresearch/hermes-agent:latest` Docker digest and the stable `omniroute` npm release. It pins both in `Dockerfile` and saves the corresponding version files. It also regenerates `cloudflare/omniroute-catalog.js` from that tagged public OmniRoute release for the selected OpenRouter/Gemini adapters. It commits only when anything changes. The full OmniRoute server remains **disabled on Render Free** to protect the 512 MB limit.
+`.github/workflows/update-hermes.yml` runs daily and can be started manually. It checks the official `nousresearch/hermes-agent:latest` Docker digest, pins it in `Dockerfile`, and records it in `.hermes-image-digest`. It commits only when the digest changes. No upstream router package is installed any more: Free Models is project-owned source in `cloudflare/`, so it is deployed by the Cloudflare workflow whenever it changes.
 
-Changes to public provider URL formats fail closed for manual compatibility review. A custom Cloudflare dashboard cannot automatically inherit arbitrary upstream OmniRoute dashboard features.
+If the base image declaration in `Dockerfile` ever stops matching the expected `FROM nousresearch/hermes-agent…` form, the updater fails closed for manual review. Provider URL formats and model allow-lists are also changed by hand only, never inferred from new upstream releases.
 
 ## Automatic deploys
 
