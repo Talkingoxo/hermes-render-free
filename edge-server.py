@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
+import secrets
 import json
 import os
 import subprocess
@@ -22,6 +24,9 @@ _ALLOWED_TOOLSETS = ["terminal", "file", "browser", "code_execution", "vision"]
 _OMNIROUTE_URL = "http://127.0.0.1:20128"
 _omniroute_lock = threading.Lock()
 _omniroute_process: subprocess.Popen | None = None
+_omniroute_internal_token = secrets.token_urlsafe(40)
+_omniroute_api_key: str | None = None
+_omniroute_bootstrapped = False
 
 
 class ExecuteRequest(BaseModel):
@@ -65,6 +70,80 @@ def _allowed_names() -> set[str]:
     }
 
 
+
+def _omniroute_admin_request(path: str, method: str = "GET", data: dict | None = None) -> dict:
+    headers = {"x-omniroute-internal-service-token": _omniroute_internal_token}
+    payload = None
+    if data is not None:
+        headers["content-type"] = "application/json"
+        payload = json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(_OMNIROUTE_URL + path, data=payload, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as res:
+        return json.load(res)
+
+
+def _bootstrap_free_provider() -> None:
+    global _omniroute_bootstrapped, _omniroute_api_key
+    if _omniroute_bootstrapped:
+        return
+
+    # OmniRoute's official free-onboarding API only accepts eligible keyless providers.
+    candidates = _omniroute_admin_request("/api/providers/free-onboarding")
+    allowed = {item.get("id") for item in candidates.get("providers", [])}
+    if "opencode" in allowed:
+        result = _omniroute_admin_request(
+            "/api/providers/free-onboarding", "POST",
+            {"providerIds": ["opencode"], "confirmed": True},
+        )
+        print("OmniRoute free provider setup result:",
+              [x.get("status") for x in result.get("results", [])], flush=True)
+        if not all(x.get("status") in ("created", "skipped") for x in result.get("results", [])):
+            raise RuntimeError("OmniRoute keyless provider registration failed")
+    else:
+        print("OmniRoute keyless onboarding: OpenCode already configured or unavailable", flush=True)
+
+    key_path = Path(os.environ.get("HERMES_HOME", "/opt/data")) / ".omniroute" / "hermes-local-api-key.json"
+    if key_path.exists():
+        try:
+            saved = json.loads(key_path.read_text(encoding="utf-8")).get("key")
+            if isinstance(saved, str) and saved:
+                _omniroute_api_key = saved
+        except (ValueError, OSError):
+            pass
+
+    if not _omniroute_api_key:
+        response = _omniroute_admin_request(
+            "/api/keys", "POST", {"name": "hermes-local-model-bridge"},
+        )
+        candidate = response.get("key")
+        if not isinstance(candidate, str) or not candidate:
+            raise RuntimeError("OmniRoute did not return a local inference key")
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key_path.write_text(json.dumps({"key": candidate}) + "\n", encoding="utf-8")
+        key_path.chmod(0o600)
+        _omniroute_api_key = candidate
+
+    _omniroute_bootstrapped = True
+    print("OmniRoute local model bridge configured", flush=True)
+
+
+def _setup_omniroute_once() -> None:
+    try:
+        _ensure_omniroute()
+        print("OmniRoute commissioning test: ready", flush=True)
+    except Exception as exc:
+        print("OmniRoute commissioning test failed:", type(exc).__name__, flush=True)
+    finally:
+        _stop_omniroute()
+
+
+@app.on_event("startup")
+def _optional_omniroute_commissioning() -> None:
+    if os.environ.get("HERMES_SETUP_OMNIROUTE_ONCE") == "1":
+        threading.Thread(target=_setup_omniroute_once, name="omniroute-setup",
+                         daemon=True).start()
+
+
 def _omniroute_alive() -> bool:
     try:
         with urllib.request.urlopen(f"{_OMNIROUTE_URL}/healthz", timeout=2) as response:
@@ -82,11 +161,13 @@ def _ensure_omniroute() -> None:
         raise HTTPException(status_code=503, detail='OmniRoute is installed but disabled on Render Free due to its 512 MB limit. Use Cloudflare Workers AI for testing.')
 
     if _omniroute_alive():
-        return
+        _bootstrap_free_provider()
+    return
 
     with _omniroute_lock:
         if _omniroute_alive():
-            return
+            _bootstrap_free_provider()
+        return
 
         log_dir = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +176,12 @@ def _ensure_omniroute() -> None:
         env = os.environ.copy()
         env["HOME"] = os.environ.get("HERMES_HOME", "/opt/data")
         env["OMNIROUTE_SERVER_HOST"] = "127.0.0.1"
+        env["OMNIROUTE_INTERNAL_SERVICE_TOKEN"] = _omniroute_internal_token
+        seed = os.environ.get("HERMES_BACKUP_TOKEN") or os.environ.get("HERMES_EDGE_TOKEN")
+        if seed:
+            env.setdefault("JWT_SECRET", hashlib.sha256((seed + "/omniroute/jwt").encode()).hexdigest())
+            env.setdefault("API_KEY_SECRET", hashlib.sha256((seed + "/omniroute/api-key").encode()).hexdigest())
+            env.setdefault("INITIAL_PASSWORD", hashlib.sha256((seed + "/omniroute/login").encode()).hexdigest())
         env["PORT"] = "20128"
         env["OMNIROUTE_PORT"] = "20128"
         env["OMNIROUTE_DISABLE_BACKGROUND_SERVICES"] = "true"
@@ -112,7 +199,8 @@ def _ensure_omniroute() -> None:
         deadline = time.time() + 100
         while time.time() < deadline:
             if _omniroute_alive():
-                return
+                _bootstrap_free_provider()
+            return
             if _omniroute_process.poll() is not None:
                 break
             time.sleep(1)
@@ -153,6 +241,8 @@ def _proxy_omniroute(path: str, method: str, body: bytes | None = None) -> Respo
     _ensure_omniroute()
     target = f"{_OMNIROUTE_URL}/{path.lstrip('/')}"
     headers = {"accept": "application/json"}
+    if _omniroute_api_key:
+        headers["authorization"] = "Bearer " + _omniroute_api_key
     if body is not None:
         headers["content-type"] = "application/json"
 
