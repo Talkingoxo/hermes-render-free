@@ -72,7 +72,7 @@ export async function runFreeModels(env,payload){
 }
 
 export async function handleManagement(request,env,url){
- if(url.pathname==="/admin"||url.pathname==="/admin/"){if(request.method!=="GET")return reply({error:"Method not allowed"},405);return new Response(page(),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","x-frame-options":"DENY","referrer-policy":"no-referrer","content-security-policy":"default-src 'none'; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}})}
+ if(["/free-models","/free-models/","/admin","/admin/"].includes(url.pathname)){if(request.method!=="GET")return reply({error:"Method not allowed"},405);return new Response(page(),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","x-frame-options":"DENY","referrer-policy":"no-referrer","content-security-policy":"default-src 'none'; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}})}
  if(!url.pathname.startsWith("/api/admin/"))return null;
  if(!authorized(request,env))return reply({error:"Unauthorized"},401);
  if(request.method!=="GET"&&request.headers.get("origin")&&request.headers.get("origin")!==url.origin)return reply({error:"Cross-origin request blocked"},403);
