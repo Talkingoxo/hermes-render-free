@@ -1,4 +1,4 @@
-name: Track upstream Hermes
+name: Update split Hermes and OmniRoute
 
 on:
   schedule:
@@ -8,37 +8,74 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: hermes-upstream-update
+  cancel-in-progress: false
+
 jobs:
-  refresh:
+  update:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
-      - name: Resolve official Hermes latest digest
+      - name: Check latest official Hermes Docker digest
         shell: bash
         run: |
           set -euo pipefail
-          token="$(curl -fsSL 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:nousresearch/hermes-agent:pull' | jq -r .token)"
-          digest="$(curl -fsSI \
+          token="$(curl --retry 3 -fsSL 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:nousresearch/hermes-agent:pull' | jq -r .token)"
+          digest="$(curl --retry 3 -fsSI \
             -H "Authorization: Bearer $token" \
             -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
             'https://registry-1.docker.io/v2/nousresearch/hermes-agent/manifests/latest' \
             | tr -d '\r' \
             | awk 'tolower($1)=="docker-content-digest:" {print $2}' \
             | tail -1)"
-          test -n "$digest"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           echo "$digest" > .hermes-image-digest
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          digest=Path(".hermes-image-digest").read_text().strip()
+          path=Path("Dockerfile")
+          text=path.read_text()
+          text,count=re.subn(r"^FROM nousresearch/hermes-agent(?::latest|@sha256:[a-f0-9]{64})",
+                             "FROM nousresearch/hermes-agent@"+digest,text,count=1,flags=re.M)
+          if count!=1: raise SystemExit("Hermes base image declaration has changed; review required")
+          path.write_text(text)
+          PY
 
-      - name: Commit changed digest
+      - name: Check official OmniRoute npm release
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- .hermes-image-digest; then
-            echo "Hermes image is unchanged."
+          version="$(npm view omniroute dist-tags.latest --json | tr -d '"\r\n')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "$version" > .omniroute-version
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          version=Path(".omniroute-version").read_text().strip()
+          path=Path("Dockerfile")
+          text=path.read_text()
+          text,count=re.subn(r"npm install -g omniroute@[0-9]+\.[0-9]+\.[0-9]+",
+                             "npm install -g omniroute@"+version,text,count=1)
+          if count!=1: raise SystemExit("OmniRoute install pin has changed; review required")
+          path.write_text(text)
+          PY
+
+      - name: Commit upstream versions only when changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add Dockerfile .hermes-image-digest .omniroute-version
+          if git diff --cached --quiet; then
+            echo "Both upstream versions unchanged."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .hermes-image-digest
-          git commit -m "chore: refresh Hermes latest image"
+          git commit -m "chore: update pinned Hermes and OmniRoute releases"
           git push
