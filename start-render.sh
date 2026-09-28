@@ -35,6 +35,8 @@ fi
 # explicitly export the pinned executable path for browser-use/agent-browser.
 if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && [ -r /etc/hermes/agent-browser-executable-path ]; then
   export AGENT_BROWSER_EXECUTABLE_PATH="$(cat /etc/hermes/agent-browser-executable-path)"
+elif [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && [ -x /usr/bin/chromium ]; then
+  export AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 fi
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/hermes/tools}"
 if [ -n "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && [ -x "$AGENT_BROWSER_EXECUTABLE_PATH" ]; then
