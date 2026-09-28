@@ -76,6 +76,11 @@ def _omniroute_alive() -> bool:
 def _ensure_omniroute() -> None:
     global _omniroute_process
 
+    # On Render Free, the full OmniRoute Next.js server exceeds 512 MiB.
+    # Keep it installed, but require explicit opt-in on a larger instance.
+    if os.environ.get('HERMES_ALLOW_LOCAL_OMNIROUTE') != '1':
+        raise HTTPException(status_code=503, detail='OmniRoute is installed but disabled on Render Free due to its 512 MB limit. Use Cloudflare Workers AI for testing.')
+
     if _omniroute_alive():
         return
 
