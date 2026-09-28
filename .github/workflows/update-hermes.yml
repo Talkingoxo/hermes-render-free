@@ -117,6 +117,17 @@ jobs:
           git commit -m "chore: update pinned Hermes and OmniRoute releases"
           git push
 
+      # Optional fallback if Render's connected GitHub auto-deploy webhook is unavailable.
+      - name: Render deployment hook fallback
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            curl -fsSL --retry 3 -X POST "$RENDER_DEPLOY_HOOK_URL"
+          else
+            echo "Render auto-deploy on main remains the primary update mechanism."
+          fi
       # GITHUB_TOKEN pushes do not trigger on:push workflows, so deploy from this run.
       - name: Deploy Cloudflare after an upstream update
         if: steps.commit.outputs.changed == 'true'
