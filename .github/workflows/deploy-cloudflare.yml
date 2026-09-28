@@ -24,7 +24,8 @@ jobs:
       - name: Check both Cloudflare modules
         run: |
           node --input-type=module --check < cloudflare/worker.js
-          node --input-type=module --check < cloudflare/manager.js
+          node --input-type=module --check < cloudflare/free-models.js
+          node --test cloudflare/free-models.test.mjs
       - name: Dry-run the exact single-Worker bundle
         run: npx --yes wrangler@4.136.3 deploy -c wrangler.toml --dry-run --outdir /tmp/hermes-bundle
       - name: Deploy same Worker to Cloudflare
