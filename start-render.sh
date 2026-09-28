@@ -14,6 +14,13 @@ if [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
   /usr/local/bin/hermes-backup restore || true
 fi
 
+# Retired OmniRoute data is not used by Free Models; API keys now live encrypted in Cloudflare.
+if [ -d "${HERMES_HOME:-/opt/data}/.omniroute" ]; then
+  rm -rf -- "${HERMES_HOME:-/opt/data}/.omniroute"
+  changed=1
+  echo "Removed retired local router data."
+fi
+
 echo "Sanitizing Hermes configuration..."
 set +e
 /usr/local/bin/hermes-sanitize-config
