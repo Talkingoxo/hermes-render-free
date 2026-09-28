@@ -21,9 +21,9 @@ bucket_name = "hermes-agent-backups"
 name = "HERMES_STATE"
 class_name = "HermesState"
 
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["HermesState"]
+[exports.HermesState]
+type = "durable-object"
+storage = "sqlite"
 
 [[workflows]]
 name = "hermes-tasks"
