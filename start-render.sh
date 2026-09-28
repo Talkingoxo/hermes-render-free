@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# Keep browser daemon sockets isolated from other /tmp reapers.
+export TMPDIR="${HERMES_HOME:-/opt/data}/.runtime/tmp"
+mkdir -p "$TMPDIR"
+chmod 700 "${HERMES_HOME:-/opt/data}/.runtime" "$TMPDIR"
+
 changed=0
 
 echo "Hermes headless startup beginning..."
