@@ -43,6 +43,8 @@ case "${1:-}" in
       --exclude='./.cache' \
       --exclude='./.npm' \
       --exclude='./.runtime' \
+      --exclude='./.config/browser-harness/runtime' \
+      --exclude='./.config/agent-browser' \
       --exclude='./.local/share' \
       --exclude='./.omniroute/logs' \
       --exclude='./.omniroute/cache' \
