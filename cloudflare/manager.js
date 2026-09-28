@@ -2,7 +2,7 @@
 import { OMNIROUTE_CATALOG } from "./omniroute-catalog.js";
 const PROVIDERS={
  openrouter:{name:"OpenRouter Free",defaultModel:"openrouter/free",url:OMNIROUTE_CATALOG.openrouterEndpoint,docs:"https://openrouter.ai/openrouter/free"},
- gemini:{name:"Google Gemini",defaultModel:"gemini-3.5-flash-lite",url:"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",docs:"https://ai.google.dev/gemini-api/docs/pricing"}
+ gemini:{name:"Google Gemini",defaultModel:"gemini-2.5-flash-lite",url:"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",docs:"https://ai.google.dev/gemini-api/docs/pricing"}
 };
 const reply=(v,status=200)=>new Response(JSON.stringify(v),{status,headers:{"content-type":"application/json","cache-control":"no-store"}});
 const authorized=(req,env)=>!!(env.HERMES_ADMIN_TOKEN||env.HERMES_EDGE_TOKEN)&&req.headers.get("authorization")==="Bearer "+(env.HERMES_ADMIN_TOKEN||env.HERMES_EDGE_TOKEN);
