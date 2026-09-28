@@ -11,16 +11,34 @@ case "${1:-}" in
   restore)
     archive="$(mktemp)"
     echo "Restoring Hermes state from R2..."
-    if curl -fsS $CURL_COMMON -H "Authorization: Bearer $TOKEN" \
-      "$BASE_URL/backup/latest.tar.gz" -o "$archive"; then
-      if tar -tzf "$archive" >/dev/null 2>&1; then
-        tar -xzf "$archive" -C "$DATA_DIR"
-        echo "Restored Hermes state from R2."
-      else
-        echo "Invalid R2 backup; keeping local state." >&2
-      fi
+    # Distinguish a genuinely missing backup (404) from rate limiting or outages.
+    # Never replace the last good R2 snapshot after a transient restore failure.
+    if status="$(curl -sS --connect-timeout 5 --max-time 45 \
+      -H "Authorization: Bearer $TOKEN" \
+      -w '%{http_code}' "$BASE_URL/backup/latest.tar.gz" -o "$archive")"; then
+      case "$status" in
+        200)
+          if tar -tzf "$archive" >/dev/null 2>&1 && tar -xzf "$archive" -C "$DATA_DIR"; then
+            echo "Restored Hermes state from R2."
+          else
+            echo "ERROR: R2 snapshot is invalid; refusing subsequent backup until recovery." >&2
+            rm -f "$archive"
+            exit 75
+          fi
+          ;;
+        404)
+          echo "No previous R2 snapshot; beginning with fresh Hermes state."
+          ;;
+        *)
+          echo "ERROR: R2 restore returned HTTP $status; protecting previous snapshot." >&2
+          rm -f "$archive"
+          exit 75
+          ;;
+      esac
     else
-      echo "No backup restored; continuing startup." >&2
+      echo "ERROR: R2 restore network failed; protecting previous snapshot." >&2
+      rm -f "$archive"
+      exit 75
     fi
     rm -f "$archive"
     ;;
