@@ -12,14 +12,74 @@ async function seal(env,v){const iv=crypto.getRandomValues(new Uint8Array(12));c
 async function unseal(env,v){const bytes=Uint8Array.from(atob(v),x=>x.charCodeAt(0));return new TextDecoder().decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:bytes.slice(0,12)},await cryptoKey(env),bytes.slice(12)))}
 function validModel(id,model){return typeof model==="string"&&model.length<=150&&/^[\w.\/:-]+$/.test(model)&&(id==="openrouter"?(model==="openrouter/free"||model.endsWith(":free")):/^gemini-[a-z0-9.-]+$/.test(model))}
 export async function directModel(env,payload){const name=String(payload.model||"");const slash=name.indexOf("/");const id=slash===-1?name:name.slice(0,slash);if(!PROVIDERS[id])return null;const item=(await getSettings(env))[id];if(!item?.enabled||!item?.secret)return reply({error:"Provider is not connected"},409);const model=slash===-1?item.model:(name==="openrouter/free"?"openrouter/free":name.slice(slash+1));if(!validModel(id,model))return reply({error:"This model is not allowed; OpenRouter must be free"},400);const key=await unseal(env,item.secret);const headers={"authorization":"Bearer "+key,"content-type":"application/json"};try{const res=await fetch(PROVIDERS[id].url,{method:"POST",headers,body:JSON.stringify({...payload,model}),signal:AbortSignal.timeout(90000)});return new Response(res.body,{status:res.status,headers:{"content-type":res.headers.get("content-type")||"application/json","cache-control":"no-store"}})}catch{return reply({error:"Provider request failed"},502)}}
+
+const DEFAULT_MODELS=Object.freeze([
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  "@cf/meta/llama-3.1-8b-instruct-fast"
+]);
+const acceptsFreeModel=name=>!name||["auto","free-models","free","cloudflare","workers-ai"].includes(name)||name.startsWith("@cf/")||name==="openrouter"||name==="gemini"||name.startsWith("openrouter/")||name.startsWith("gemini/");
+function modelCompletion(request,content,model,provider,usage=null){
+  const id="chatcmpl-free-"+crypto.randomUUID(),created=Math.floor(Date.now()/1000);
+  const answer={id,object:"chat.completion",created,model,provider,choices:[{index:0,message:{role:"assistant",content},finish_reason:"stop"}],usage};
+  if(request.stream===true){
+    const start={id,object:"chat.completion.chunk",created,model,choices:[{index:0,delta:{role:"assistant",content},finish_reason:null}]};
+    const end={id,object:"chat.completion.chunk",created,model,choices:[{index:0,delta:{},finish_reason:"stop"}]};
+    return new Response("data: "+JSON.stringify(start)+"\n\n"+"data: "+JSON.stringify(end)+"\n\n"+"data: [DONE]\n\n",{headers:{"content-type":"text/event-stream; charset=utf-8","cache-control":"no-store","x-free-models-provider":provider}});
+  }
+  return new Response(JSON.stringify(answer),{headers:{"content-type":"application/json","cache-control":"no-store","x-free-models-provider":provider}});
+}
+export async function runFreeModels(env,payload){
+  const requested=String(payload?.model||"auto");
+  if(!acceptsFreeModel(requested))return null;
+  if(!Array.isArray(payload?.messages)||!payload.messages.length||payload.messages.length>50)return reply({error:"Provide 1-50 messages"},400);
+  const maxTokens=Math.min(Math.max(Number(payload.max_tokens)||512,1),2048);
+  const explicit=requested.startsWith("@cf/")||requested==="openrouter"||requested.startsWith("openrouter/")||requested==="gemini"||requested.startsWith("gemini/");
+  const candidates=explicit?[requested]:[...DEFAULT_MODELS,"openrouter","gemini"];
+  const attempts=[];
+  let quotaExhausted=false,settings=null;
+  for(const candidate of candidates){
+    if(candidate.startsWith("@cf/")){
+      if(!env.AI||quotaExhausted)continue;
+      try{
+        const result=await env.AI.run(candidate,{messages:payload.messages,max_tokens:maxTokens});
+        const content=result?.response??result?.choices?.[0]?.message?.content;
+        if(typeof content==="string"&&content.trim())return modelCompletion(payload,content,candidate,"cloudflare",result?.usage??null);
+        attempts.push({provider:"cloudflare",model:candidate,error:"empty_response"});
+      }catch(err){
+        const reason=String(err).toLowerCase();
+        if(reason.includes("3036")||reason.includes("free allocation")||reason.includes("daily allocation"))quotaExhausted=true;
+        attempts.push({provider:"cloudflare",model:candidate,error:quotaExhausted?"free_quota_exhausted":"temporarily_unavailable"});
+      }
+      continue;
+    }
+    const id=candidate.split("/")[0];
+    if(!PROVIDERS[id])continue;
+    settings??=await getSettings(env);
+    if(!settings[id]?.enabled||!settings[id]?.secret){
+      if(explicit)return reply({error:id+" requires your free-tier API key in Free Models."},409);
+      continue;
+    }
+    try{
+      const res=await directModel(env,{...payload,model:candidate,stream:false,max_tokens:maxTokens});
+      if(!res.ok){attempts.push({provider:id,status:res.status});continue}
+      const data=await res.json();
+      const content=data.choices?.[0]?.message?.content;
+      if(typeof content==="string"&&content.trim())return modelCompletion(payload,content,data.model||settings[id].model,id,data.usage??null);
+      attempts.push({provider:id,error:"empty_response"});
+    }catch{attempts.push({provider:id,error:"temporarily_unavailable"})}
+  }
+  return reply({error:"No free models currently available; try later or connect an optional free provider.",attempts},503);
+}
+
 export async function handleManagement(request,env,url){
  if(url.pathname==="/admin"||url.pathname==="/admin/"){if(request.method!=="GET")return reply({error:"Method not allowed"},405);return new Response(page(),{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff","x-frame-options":"DENY","referrer-policy":"no-referrer","content-security-policy":"default-src 'none'; connect-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"}})}
  if(!url.pathname.startsWith("/api/admin/"))return null;
  if(!authorized(request,env))return reply({error:"Unauthorized"},401);
  if(request.method!=="GET"&&request.headers.get("origin")&&request.headers.get("origin")!==url.origin)return reply({error:"Cross-origin request blocked"},403);
- if(url.pathname==="/api/admin/providers"&&request.method==="GET"){const config=await getSettings(env);return reply({providers:[{id:"cloudflare",name:"Cloudflare Workers AI",model:"auto",enabled:!!env.AI,connected:!!env.AI},...Object.entries(PROVIDERS).map(([id,v])=>({id,name:v.name,model:config[id]?.model||v.defaultModel,enabled:!!config[id]?.enabled,connected:!!config[id]?.secret,docs:v.docs,mode:"on-demand"}))]})}
+ if(url.pathname==="/api/admin/router"&&request.method==="GET"){const cfg=await getSettings(env);return reply({name:"Free Models",automatic:true,cloudflareModels:DEFAULT_MODELS,optionalProviders:Object.keys(PROVIDERS).filter(id=>cfg[id]?.enabled&&cfg[id]?.secret),polling:false})}
+ if(url.pathname==="/api/admin/providers"&&request.method==="GET"){const config=await getSettings(env);return reply({providers:[{id:"cloudflare",name:"Automatic Free Models",model:"auto",enabled:!!env.AI,connected:!!env.AI},...Object.entries(PROVIDERS).map(([id,v])=>({id,name:v.name,model:config[id]?.model||v.defaultModel,enabled:!!config[id]?.enabled,connected:!!config[id]?.secret,docs:v.docs,mode:"on-demand"}))]})}
  if(url.pathname==="/api/admin/providers"&&(request.method==="PUT"||request.method==="DELETE")){let body;try{body=await request.json()}catch{return reply({error:"Invalid JSON"},400)}const id=body?.id;if(!PROVIDERS[id])return reply({error:"Unknown provider"},400);const config=await getSettings(env);if(request.method==="DELETE"){delete config[id];await setSettings(env,config);return reply({ok:true})}const model=body.model||PROVIDERS[id].defaultModel;if(!validModel(id,model))return reply({error:"Invalid model; choose an eligible free model"},400);let secret=config[id]?.secret||null;if(body.apiKey){if(typeof body.apiKey!=="string"||body.apiKey.length>4096)return reply({error:"Invalid key"},400);secret=await seal(env,body.apiKey.trim())}if(body.enabled&&!secret)return reply({error:"API key required"},400);config[id]={model,enabled:!!body.enabled,secret};await setSettings(env,config);return reply({ok:true})}
- if(url.pathname==="/api/admin/test"&&request.method==="POST"){let body;try{body=await request.json()}catch{return reply({error:"Invalid JSON"},400)}if(body.id==="cloudflare"){try{const v=await env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast",{messages:[{role:"user",content:"Say OK"}],max_tokens:24});return reply({ok:true,text:String(v.response||"").slice(0,120)})}catch{return reply({error:"Cloudflare test failed"},502)}}if(!PROVIDERS[body?.id])return reply({error:"Unknown provider"},400);const res=await directModel(env,{model:body.id,messages:[{role:"user",content:"Say OK"}],max_tokens:24,stream:false});if(!res.ok)return reply({error:"Provider returned HTTP "+res.status},502);const data=await res.json().catch(()=>({}));return reply({ok:true,text:String(data.choices?.[0]?.message?.content||"").slice(0,140)})}
+ if(url.pathname==="/api/admin/test"&&request.method==="POST"){let body;try{body=await request.json()}catch{return reply({error:"Invalid JSON"},400)}if(body.id==="cloudflare"||body.id==="auto"){const r=await runFreeModels(env,{model:"auto",messages:[{role:"user",content:"Say OK"}],max_tokens:24});const x=await r.json().catch(()=>({}));return r.ok?reply({ok:true,text:String(x.choices?.[0]?.message?.content||"").slice(0,120),model:x.model,provider:x.provider}):reply({error:x.error||"All models unavailable",attempts:x.attempts||[]},503)}if(!PROVIDERS[body?.id])return reply({error:"Unknown provider"},400);const res=await directModel(env,{model:body.id,messages:[{role:"user",content:"Say OK"}],max_tokens:24,stream:false});if(!res.ok)return reply({error:"Provider returned HTTP "+res.status},502);const data=await res.json().catch(()=>({}));return reply({ok:true,text:String(data.choices?.[0]?.message?.content||"").slice(0,140)})}
  return reply({error:"Not found"},404);
 }
 
