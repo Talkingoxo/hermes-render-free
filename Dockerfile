@@ -14,6 +14,17 @@ RUN install -d -o hermes -g hermes -m 0755 /opt/data \
  && chown -R hermes:hermes /opt/data \
  && chmod 600 /opt/data/.env
 
+# Some published Hermes image digests predate the pinned Chromium build.
+# Install only when the official baked Chromium path is absent.
+RUN if [ ! -r /etc/hermes/agent-browser-executable-path ]; then \
+      apt-get -o Acquire::Retries=3 update \
+      && DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+         chromium fonts-liberation fonts-noto-color-emoji \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-gpu"
+
 COPY start-render.sh /usr/local/bin/hermes-render-start
 COPY backup.sh /usr/local/bin/hermes-backup
 COPY backup-watch.py /usr/local/bin/hermes-backup-watch
