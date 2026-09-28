@@ -162,12 +162,12 @@ def _ensure_omniroute() -> None:
 
     if _omniroute_alive():
         _bootstrap_free_provider()
-    return
+        return
 
     with _omniroute_lock:
         if _omniroute_alive():
             _bootstrap_free_provider()
-        return
+            return
 
         log_dir = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -200,7 +200,7 @@ def _ensure_omniroute() -> None:
         while time.time() < deadline:
             if _omniroute_alive():
                 _bootstrap_free_provider()
-            return
+                return
             if _omniroute_process.poll() is not None:
                 break
             time.sleep(1)
