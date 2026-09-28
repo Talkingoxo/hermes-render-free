@@ -112,6 +112,18 @@ def _ensure_omniroute() -> None:
                 break
             time.sleep(1)
 
+        exit_code = _omniroute_process.poll() if _omniroute_process is not None else None
+        log_path = log_dir / "omniroute.log"
+        raw_log = log_path.read_text(encoding="utf-8", errors="replace")[-15000:] if log_path.exists() else ""
+        # Emit error classifications, not raw logs: logs can contain provider credentials.
+        patterns = [
+            "server not found", "better-sqlite3", "unsupported node", "eacces",
+            "enoent", "out of memory", "heap out of memory", "segmentation fault",
+            "bind", "port in use", "eaddrinuse", "error:", "fatal", "permission denied",
+            "signal", "killed", "timed out", "database", "migration",
+        ]
+        detected = [name for name in patterns if name in raw_log.lower()]
+        print(f"OmniRoute startup failed: exit_code={exit_code}, signals={detected}, log_bytes={len(raw_log)}", flush=True)
         _stop_omniroute()
         raise HTTPException(status_code=503, detail="OmniRoute failed to start; inspect authenticated diagnostics")
 
