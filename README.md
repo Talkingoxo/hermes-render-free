@@ -27,7 +27,7 @@ The main Hermes chat UI has deliberately not been selected or bundled.
 
 ## Updating this split deployment
 
-- `.github/workflows/update-hermes.yml` checks the official `nousresearch/hermes-agent` Docker digest every day. If it changes, it updates the pinned Dockerfile digest. Render's GitHub auto-deploy deploys the new Docker image, leaving the Cloudflare code and native bridge untouched.
+- `.github/workflows/update-hermes.yml` checks the official `nousresearch/hermes-agent` Docker digest every day. If it changes, it updates the pinned Dockerfile digest. Render is configured for GitHub auto-deploy, but it did not react to recent API-created commits. For reliable unattended updates, add a `RENDER_DEPLOY_HOOK_URL` GitHub Actions secret; until then, a manual deploy may be needed.
 - `.github/workflows/deploy-cloudflare.yml` validates Free Models routing tests and deploys the **same existing** `hermes` Worker after a push to `main`. Its bindings and runtime configuration are tracked in `wrangler.toml`; Wrangler preserves existing production secrets.
 - An upstream-update commit also deploys the Cloudflare Worker directly in its own workflow because pushes made with `GITHUB_TOKEN` do not start a second GitHub Actions push workflow.
 - For GitHub Actions deployment, configure the repository's `CLOUDFLARE_API_TOKEN` secret with the necessary Cloudflare Worker edit permissions. Without that one-time credential, direct Cloudflare API deployments still work, but automatic **GitHub → Cloudflare** deployment is not active.
