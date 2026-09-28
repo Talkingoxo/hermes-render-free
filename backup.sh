@@ -42,6 +42,7 @@ case "${1:-}" in
       --exclude='./cache' \
       --exclude='./.cache' \
       --exclude='./.npm' \
+      --exclude='./.runtime' \
       --exclude='./.local/share' \
       --exclude='./.omniroute/logs' \
       --exclude='./.omniroute/cache' \
