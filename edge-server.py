@@ -67,8 +67,8 @@ def _allowed_names() -> set[str]:
 
 def _omniroute_alive() -> bool:
     try:
-        with urllib.request.urlopen(f"{_OMNIROUTE_URL}/v1/models", timeout=2) as response:
-            return 200 <= response.status < 500
+        with urllib.request.urlopen(f"{_OMNIROUTE_URL}/healthz", timeout=2) as response:
+            return response.status == 200
     except Exception:
         return False
 
@@ -89,7 +89,11 @@ def _ensure_omniroute() -> None:
 
         env = os.environ.copy()
         env["HOME"] = os.environ.get("HERMES_HOME", "/opt/data")
-        env["OMNIROUTE_HOST"] = "127.0.0.1"
+        env["OMNIROUTE_SERVER_HOST"] = "127.0.0.1"
+        env["PORT"] = "20128"
+        env["OMNIROUTE_PORT"] = "20128"
+        env["OMNIROUTE_DISABLE_BACKGROUND_SERVICES"] = "true"
+        env["NODE_OPTIONS"] = "--max-old-space-size=256"
         env["OMNIROUTE_MEMORY_MB"] = os.environ.get("OMNIROUTE_MEMORY_MB", "256")
 
         _omniroute_process = subprocess.Popen(
@@ -100,7 +104,7 @@ def _ensure_omniroute() -> None:
             start_new_session=True,
         )
 
-        deadline = time.time() + 45
+        deadline = time.time() + 100
         while time.time() < deadline:
             if _omniroute_alive():
                 return
