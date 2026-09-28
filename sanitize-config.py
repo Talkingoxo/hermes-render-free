@@ -45,6 +45,20 @@ def clean_home(home: Path) -> None:
             data.pop("dashboard", None)
             changed = True
 
+        # The built-in Hermes browser needs fewer processes than Browser Use.
+        browser = data.get("browser")
+        if not isinstance(browser, dict):
+            browser = {}
+        if browser.get("backend") != "off" or browser.get("engine") != "auto":
+            changed = True
+        if browser.pop("cloud_provider", None) is not None:
+            changed = True
+        if browser.pop("use_gateway", None) is not None:
+            changed = True
+        browser["backend"] = "off"
+        browser["engine"] = "auto"
+        data["browser"] = browser
+
         gateway = data.get("gateway")
         if isinstance(gateway, dict):
             platforms = gateway.get("platforms")
