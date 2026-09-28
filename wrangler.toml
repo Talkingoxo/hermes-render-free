@@ -1,0 +1,34 @@
+name = "hermes"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-09-27"
+workers_dev = true
+keep_vars = true
+
+[vars]
+RENDER_ORIGIN = "https://hermes-agent-z8em.onrender.com"
+
+[ai]
+binding = "AI"
+
+[browser]
+binding = "BROWSER"
+
+[[r2_buckets]]
+binding = "HERMES_BACKUPS"
+bucket_name = "hermes-agent-backups"
+
+[[durable_objects.bindings]]
+name = "HERMES_STATE"
+class_name = "HermesState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HermesState"]
+
+[[workflows]]
+name = "hermes-tasks"
+binding = "HERMES_TASKS"
+class_name = "HermesTaskWorkflow"
+
+[observability]
+enabled = true
