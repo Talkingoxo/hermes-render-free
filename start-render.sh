@@ -10,8 +10,13 @@ changed=0
 
 echo "Hermes headless startup beginning..."
 
+restore_ok=1
 if [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
-  /usr/local/bin/hermes-backup restore || true
+  if ! /usr/local/bin/hermes-backup restore; then
+    restore_ok=0
+    export HERMES_BACKUP_RESTORE_FAILED=1
+    echo "R2 unavailable: preserving prior snapshot; automatic backups disabled until state can be restored." >&2
+  fi
 fi
 
 # Retired OmniRoute data is not used by Free Models; API keys now live encrypted in Cloudflare.
@@ -34,11 +39,11 @@ elif [ "$sanitize_status" -ne 0 ]; then
   exit "$sanitize_status"
 fi
 
-if [ "$changed" -eq 1 ] && [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
+if [ "$restore_ok" -eq 1 ] && [ "$changed" -eq 1 ] && [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
   /usr/local/bin/hermes-backup save || true
 fi
 
-if [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
+if [ "$restore_ok" -eq 1 ] && [ -n "${HERMES_BACKUP_URL:-}" ] && [ -n "${HERMES_BACKUP_TOKEN:-}" ]; then
   /usr/local/bin/hermes-backup-watch &
 fi
 
