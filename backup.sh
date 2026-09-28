@@ -29,26 +29,20 @@ case "${1:-}" in
     trap 'rm -rf "$work"' EXIT
     mkdir -p "$work/data"
 
-    # Do not upload generated npm caches, downloaded browser binaries,
-    # duplicate OmniRoute database backups, or operational logs.
+    # Exclude generated caches, downloaded browser binaries, retired router data, and logs.
     tar -C "$DATA_DIR" \
       --exclude='./state.db' \
       --exclude='./state.db-wal' \
       --exclude='./state.db-shm' \
-      --exclude='./.omniroute/storage.sqlite' \
-      --exclude='./.omniroute/storage.sqlite-wal' \
-      --exclude='./.omniroute/storage.sqlite-shm' \
       --exclude='./logs' \
       --exclude='./cache' \
       --exclude='./.cache' \
+      --exclude='./.omniroute' \
       --exclude='./.npm' \
       --exclude='./.runtime' \
       --exclude='./.config/browser-harness/runtime' \
       --exclude='./.config/agent-browser' \
       --exclude='./.local/share' \
-      --exclude='./.omniroute/logs' \
-      --exclude='./.omniroute/cache' \
-      --exclude='./.omniroute/db_backups' \
       --exclude='./.config/chromium' \
       --exclude='./.config/google-chrome' \
       --exclude='*/node_modules' \
@@ -56,7 +50,7 @@ case "${1:-}" in
       --exclude='*.log' \
       -cf - . | tar -C "$work/data" -xf -
 
-    for database in state.db .omniroute/storage.sqlite; do
+    for database in state.db; do
       if [ -f "$DATA_DIR/$database" ]; then
         mkdir -p "$work/data/$(dirname "$database")"
         /opt/hermes/.venv/bin/python - "$DATA_DIR/$database" "$work/data/$database" <<'PY'
