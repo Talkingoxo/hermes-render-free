@@ -16,6 +16,8 @@ IGNORED_PATHS = {
     (".omniroute", "db_backups"),
     (".config", "chromium"),
     (".config", "google-chrome"),
+    (".config", "browser-harness", "runtime"),
+    (".config", "agent-browser"),
 }
 IGNORED_NAMES = {"agent.log", "agent.log.1", "agent.log.2"}
 events: queue.Queue[object] = queue.Queue()
