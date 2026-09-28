@@ -108,7 +108,8 @@ def _ensure_omniroute() -> None:
                 break
             time.sleep(1)
 
-        raise HTTPException(status_code=503, detail="OmniRoute failed to start")
+        _stop_omniroute()
+        raise HTTPException(status_code=503, detail="OmniRoute failed to start; inspect authenticated diagnostics")
 
 
 def _stop_omniroute() -> None:
@@ -224,6 +225,19 @@ def execute(body: ExecuteRequest, request: Request) -> dict[str, Any]:
             pass
 
     return {"ok": True, "tool": body.name, "result": parsed}
+
+
+@app.get("/api/omniroute/diagnostics")
+def omniroute_diagnostics(request: Request) -> dict[str, Any]:
+    _require_auth(request)
+    log_path = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "logs" / "omniroute.log"
+    content = log_path.read_text(encoding="utf-8", errors="replace")[-4000:] if log_path.exists() else "(no OmniRoute log)"
+    process = _omniroute_process
+    return {
+        "installed": Path("/usr/local/bin/omniroute").exists(),
+        "process_running": process is not None and process.poll() is None,
+        "recent_log": content,
+    }
 
 
 @app.get("/api/omniroute/v1/models")
