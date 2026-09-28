@@ -8,7 +8,7 @@ from watchfiles import watch
 
 DATA_DIR = Path(os.environ.get("HERMES_HOME", "/opt/data")).resolve()
 QUIET_SECONDS = max(1, int(os.environ.get("HERMES_BACKUP_DEBOUNCE_SECONDS", "60")))
-IGNORED_TOP_LEVEL = {"logs", "cache", ".cache", ".npm"}
+IGNORED_TOP_LEVEL = {"logs", "cache", ".cache", ".npm", ".runtime"}
 IGNORED_PATHS = {
     (".local", "share"),
     (".omniroute", "logs"),
