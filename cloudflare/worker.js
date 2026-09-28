@@ -1,5 +1,5 @@
 import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
-import {handleManagement,directModel} from "./manager.js";
+import {handleManagement,runFreeModels} from "./free-models.js";
 
 const json = (data, status = 200, extra = {}) =>
   new Response(JSON.stringify(data), {
@@ -111,82 +111,23 @@ export class HermesState extends DurableObject {
         historyLimit
       ).toArray().reverse();
 
-      const requestedModel = body.model || this.env.MODEL_NAME || "";
-      if (/^(openrouter|gemini)(?:\/|$)/.test(requestedModel)) {
-        const r=await directModel(this.env,{model:requestedModel,
-          messages:rows.map(row=>({role:row.role,content:row.content})),
-          stream:false,max_tokens:Math.min(Math.max(Number(body.max_tokens)||512,1),2048)});
-        if(!r.ok)return json({error:"Provider request failed",status:r.status},502);
-        const result=await r.json().catch(()=>({}));
-        const msg=result.choices?.[0]?.message;
-        if(typeof msg?.content!=="string")return json({error:"Provider returned no text"},502);
-        const assistant=this._append("assistant",msg.content,{provider:requestedModel,tool_calls:msg.tool_calls||null});
-        return json({user:userMessage,assistant,usage:result.usage||null});
+      const payload={model:body.model||"auto",messages:rows.map(r=>({role:r.role,content:r.content})),stream:false,max_tokens:Math.min(Math.max(Number(body.max_tokens)||512,1),2048)};
+      let upstream=await runFreeModels(this.env,payload);
+      if(!upstream){
+        if(!this.env.MODEL_BASE_URL||!this.env.MODEL_API_KEY)return json({error:"Unknown model; use auto or a connected free model"},400);
+        const base=String(this.env.MODEL_BASE_URL).replace(/\/$/,"");
+        upstream=await fetch(base.endsWith("/v1")?base+"/chat/completions":base+"/v1/chat/completions",{
+          method:"POST",headers:{authorization:"Bearer "+this.env.MODEL_API_KEY,"content-type":"application/json"},body:JSON.stringify(payload)});
       }
-      const wantsOmniRoute = typeof requestedModel === "string" && requestedModel.startsWith("omniroute/");
-      const useWorkersAI = Boolean(this.env.AI && !this.env.MODEL_BASE_URL &&
-        (!requestedModel || requestedModel === "auto" || requestedModel === "cloudflare" || requestedModel === "workers-ai" || requestedModel.startsWith("@cf/")));
-      if (useWorkersAI) {
-        const model = requestedModel.startsWith("@cf/") ? requestedModel : "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-        let result;
-        try {
-          result = await this.env.AI.run(model, {
-            messages: rows.map(row => ({ role: row.role, content: row.content })),
-            max_tokens: Math.min(Math.max(Number(body.max_tokens) || 512, 1), 2048),
-          });
-        } catch(e) { return json({error:"Workers AI request failed",detail:String(e)},503); }
-        const content = result?.response ?? result?.choices?.[0]?.message?.content ?? "";
-        if(typeof content !== "string" || !content.trim()) return json({error:"Workers AI returned no text",result},502);
-        const assistantMessage = this._append("assistant",content,{provider:"workers-ai",model,tool_calls:result?.tool_calls ?? null});
-        return json({user:userMessage,assistant:assistantMessage,usage:result?.usage ?? null});
-      }
-      if(!this.env.MODEL_BASE_URL && !wantsOmniRoute) return json({error:"Use model auto (Cloudflare Workers AI). Additional providers require configuring MODEL_BASE_URL."},503);
-      const useOmniRoute = wantsOmniRoute || !this.env.MODEL_BASE_URL;
-      const base = useOmniRoute
-        ? `${String(this.env.RENDER_ORIGIN || "").replace(/\/$/, "")}/api/omniroute/v1`
-        : String(this.env.MODEL_BASE_URL).replace(/\/$/, "");
-      const apiKey = useOmniRoute ? this.env.HERMES_EDGE_TOKEN : this.env.MODEL_API_KEY;
-      if (!base) return json({ error: "No model route is configured." }, 503);
-      const endpoint = base.endsWith("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-      const payload = {
-        model: wantsOmniRoute ? requestedModel.slice("omniroute/".length) : (body.model || this.env.MODEL_NAME || "auto"),
-        messages: rows.map((row) => ({ role: row.role, content: row.content })),
-        stream: false,
-      };
-
-      const modelHeaders = { "content-type": "application/json" };
-      if (apiKey) modelHeaders["authorization"] = `Bearer ${apiKey}`;
-      const upstream = await fetch(endpoint, {
-        method: "POST",
-        headers: modelHeaders,
-        body: JSON.stringify(payload),
-      });
-
-      const raw = await upstream.text();
-      if (!upstream.ok) {
-        return json({ error: "Model provider request failed", status: upstream.status, detail: raw.slice(0, 2000) }, 502);
-      }
-
-      let parsed;
-      try { parsed = JSON.parse(raw); }
-      catch { return json({ error: "Model provider returned invalid JSON" }, 502); }
-
-      const choice = parsed?.choices?.[0]?.message;
-      const content = choice?.content ?? "";
-      const assistantMessage = this._append("assistant", content, {
-        provider_response_id: parsed?.id ?? null,
-        tool_calls: choice?.tool_calls ?? null,
-        finish_reason: parsed?.choices?.[0]?.finish_reason ?? null,
-      });
-
-      return json({
-        user: userMessage,
-        assistant: assistantMessage,
-        usage: parsed?.usage ?? null,
-      });
+      const result=await upstream.json().catch(()=>({}));
+      if(!upstream.ok)return json({error:result.error||"No free model available",attempts:result.attempts||[],status:upstream.status},upstream.status);
+      const msg=result.choices?.[0]?.message;
+      if(typeof msg?.content!=="string"||!msg.content.trim())return json({error:"Model returned no text"},502);
+      const assistant=this._append("assistant",msg.content,{provider:result.provider||"configured",model:result.model||payload.model,tool_calls:msg.tool_calls||null});
+      return json({user:userMessage,assistant,usage:result.usage||null});
     }
 
-    if (request.method === "GET" && url.pathname.endsWith("/state")) {
+        if (request.method === "GET" && url.pathname.endsWith("/state")) {
       const rows = this.sql.exec("SELECT key, value, updated_at FROM state").toArray();
       const state = {};
       for (const row of rows) {
@@ -234,15 +175,16 @@ export class HermesTaskWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const params = typeof event.payload === "string" ? JSON.parse(event.payload) : (event.payload || {});
     const sessionId = params.session_id || event.instanceId;
-    if(params.action==="omniroute_models"){
-      const response=await step.do("OmniRoute models on demand",async()=>{
-        const res=await fetch(this.env.RENDER_ORIGIN+"/api/omniroute/v1/models",{headers:{authorization:"Bearer "+this.env.HERMES_EDGE_TOKEN}});
-        const raw=await res.text();let data;try{data=JSON.parse(raw)}catch{data={error:raw.slice(0,400)}};
-        return {status:res.status,models:(data.data||[]).map(x=>x.id).slice(0,20),error:data.detail||data.error||null};
-      });return {action:"omniroute_models",response};
+    if(params.action==="free_models"){
+      return step.do("Read configured Free Models on demand",async()=>{
+        const res=await this.env.HERMES_STATE.getByName("provider-management-v1").fetch("https://state.internal/state");
+        const state=(await res.json()).state?.providers||{};
+        return {automatic:true,keyless:["@cf/meta/llama-3.3-70b-instruct-fp8-fast","@cf/meta/llama-3.1-8b-instruct-fast"],
+          configured:Object.entries(state).filter(([,v])=>v.enabled&&v.secret).map(([id])=>id)};
+      });
     }
 
-    if (params.action === "browser_content") {
+        if (params.action === "browser_content") {
       const result=await step.do("Cloudflare browser on demand",async()=>{
         if(typeof params.url!=="string")throw Error("URL required");
         const page=await cloudflareBrowserContent(this.env,params.url);
@@ -348,64 +290,16 @@ async function proxyNative(request, env, suffix) {
   return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
 }
 
-async function proxyModel(request, env) {
-  if (!bearerOk(request, env)) return new Response("Unauthorized", { status: 401 });
-  const incoming = await request.arrayBuffer();
-  const payload = JSON.parse(new TextDecoder().decode(incoming));
-  const direct=await directModel(env,payload);
-  if(direct)return direct;
-  const modelRequest = payload.model || env.MODEL_NAME || "";
-  const wantsOmniRoute = typeof modelRequest === "string" && modelRequest.startsWith("omniroute/");
-  const useWorkersAI = Boolean(env.AI && !env.MODEL_BASE_URL &&
-    (!modelRequest || modelRequest === "auto" || modelRequest === "cloudflare" || modelRequest === "workers-ai" || modelRequest.startsWith("@cf/")));
-  if (useWorkersAI) {
-    const model = modelRequest.startsWith("@cf/") ? modelRequest : "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-    let result;
-    try { result=await env.AI.run(model, {
-      messages:payload.messages,
-      max_tokens:Math.min(Math.max(Number(payload.max_tokens)||512,1),2048),
-    }); } catch(e) { return json({error:"Workers AI request failed",detail:String(e)},503); }
-    const content=result?.response ?? result?.choices?.[0]?.message?.content ?? "";
-    if(typeof content!=="string" || !content.trim()) return json({error:"Workers AI returned no text",result},502);
-    const id="chatcmpl-cf-"+crypto.randomUUID();
-    const answer={id,object:"chat.completion",created:Math.floor(Date.now()/1000),model,
-      choices:[{index:0,message:{role:"assistant",content},finish_reason:"stop"}],usage:result?.usage ?? null};
-    if(payload.stream===true) {
-      const first={id,object:"chat.completion.chunk",created:answer.created,model,choices:[{index:0,delta:{role:"assistant",content},finish_reason:null}]};
-      const last={id,object:"chat.completion.chunk",created:answer.created,model,choices:[{index:0,delta:{},finish_reason:"stop"}]};
-      return new Response("data: "+JSON.stringify(first)+"\n\n"+"data: "+JSON.stringify(last)+"\n\n"+"data: [DONE]\n\n",
-        {headers:{"content-type":"text/event-stream; charset=utf-8","cache-control":"no-cache"}});
-    }
-    return json(answer);
-  }
-  if(!env.MODEL_BASE_URL && !wantsOmniRoute) return json({error:"Use model auto (Cloudflare Workers AI). Additional providers require configuring MODEL_BASE_URL."},503);
-  const useOmniRoute = wantsOmniRoute || !env.MODEL_BASE_URL;
-  const base = useOmniRoute
-    ? `${String(env.RENDER_ORIGIN || "").replace(/\/$/, "")}/api/omniroute/v1`
-    : String(env.MODEL_BASE_URL).replace(/\/$/, "");
-  const apiKey = useOmniRoute ? env.HERMES_EDGE_TOKEN : env.MODEL_API_KEY;
-  if (!base) return json({ error: "No model route is configured." }, 503);
-  const endpoint = base.endsWith("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-
-  const headers = new Headers(request.headers);
-  if (apiKey) headers.set("authorization", `Bearer ${apiKey}`);
-  else headers.delete("authorization");
-  headers.set("content-type", "application/json");
-  headers.delete("host");
-  headers.delete("content-length");
-
-  const upstream = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: wantsOmniRoute ? JSON.stringify({...payload, model: modelRequest.slice("omniroute/".length)}) : incoming,
-  });
-
-  const outHeaders = new Headers(upstream.headers);
-  outHeaders.delete("set-cookie");
-  return new Response(upstream.body, {
-    status: upstream.status,
-    headers: outHeaders,
-  });
+async function proxyModel(request,env){
+  if(!bearerOk(request,env))return new Response("Unauthorized",{status:401});
+  let payload;try{payload=await request.json()}catch{return json({error:"Invalid JSON"},400)}
+  const routed=await runFreeModels(env,payload);
+  if(routed)return routed;
+  if(!env.MODEL_BASE_URL||!env.MODEL_API_KEY)return json({error:"Unknown model; choose auto or configure a provider"},400);
+  const base=String(env.MODEL_BASE_URL).replace(/\/$/,"");
+  const target=base.endsWith("/v1")?base+"/chat/completions":base+"/v1/chat/completions";
+  const upstream=await fetch(target,{method:"POST",headers:{authorization:"Bearer "+env.MODEL_API_KEY,"content-type":"application/json"},body:JSON.stringify(payload)});
+  return new Response(upstream.body,{status:upstream.status,headers:{"content-type":upstream.headers.get("content-type")||"application/json","cache-control":"no-store"}});
 }
 
 let browserCommandSeq = 0;
@@ -490,18 +384,16 @@ export default {
 
     if ((url.pathname === "/api/models" || url.pathname === "/v1/models") && request.method === "GET") {
       if(!bearerOk(request,env))return new Response("Unauthorized",{status:401});
-      if(url.searchParams.get("source")==="omniroute"){
-        const origin=String(env.RENDER_ORIGIN||"").replace(/\/$/,"");
-        const upstream=await fetch(origin+"/api/omniroute/v1/models",{headers:{authorization:"Bearer "+env.HERMES_EDGE_TOKEN}});
-        return new Response(upstream.body,{status:upstream.status,headers:{"content-type":upstream.headers.get("content-type")||"application/json"}});
-      }
       return json({object:"list",data:[
-        {id:"auto",object:"model",owned_by:"cloudflare"},
-        {id:"cloudflare",object:"model",owned_by:"cloudflare"},
-        {id:"@cf/meta/llama-3.3-70b-instruct-fp8-fast",object:"model",owned_by:"cloudflare"}
+        {id:"auto",object:"model",owned_by:"free-models"},
+        {id:"free-models",object:"model",owned_by:"free-models"},
+        {id:"@cf/meta/llama-3.3-70b-instruct-fp8-fast",object:"model",owned_by:"cloudflare"},
+        {id:"@cf/meta/llama-3.1-8b-instruct-fast",object:"model",owned_by:"cloudflare"},
+        {id:"openrouter",object:"model",owned_by:"free-models",requires_user_key:true},
+        {id:"gemini",object:"model",owned_by:"free-models",requires_user_key:true}
       ]});
     }
-    if (url.pathname === "/api/tasks" && request.method === "POST") {
+        if (url.pathname === "/api/tasks" && request.method === "POST") {
       if (!bearerOk(request, env)) return new Response("Unauthorized", { status: 401 });
       const body = await request.json();
       if (!body || body.content == null) return json({ error: "content is required" }, 400);
