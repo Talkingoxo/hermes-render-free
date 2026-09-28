@@ -4,14 +4,20 @@ import queue
 import subprocess
 import threading
 from pathlib import Path
-
 from watchfiles import watch
 
 DATA_DIR = Path(os.environ.get("HERMES_HOME", "/opt/data")).resolve()
 QUIET_SECONDS = max(1, int(os.environ.get("HERMES_BACKUP_DEBOUNCE_SECONDS", "60")))
-IGNORED_TOP_LEVEL = {"logs", "cache"}
+IGNORED_TOP_LEVEL = {"logs", "cache", ".cache", ".npm"}
+IGNORED_PATHS = {
+    (".local", "share"),
+    (".omniroute", "logs"),
+    (".omniroute", "cache"),
+    (".omniroute", "db_backups"),
+    (".config", "chromium"),
+    (".config", "google-chrome"),
+}
 IGNORED_NAMES = {"agent.log", "agent.log.1", "agent.log.2"}
-
 events: queue.Queue[object] = queue.Queue()
 
 def relevant(path: str) -> bool:
@@ -22,6 +28,10 @@ def relevant(path: str) -> bool:
     if not rel.parts:
         return False
     if rel.parts[0] in IGNORED_TOP_LEVEL:
+        return False
+    if any(rel.parts[:len(x)] == x for x in IGNORED_PATHS):
+        return False
+    if "node_modules" in rel.parts or rel.suffix in {".log", ".crdownload"}:
         return False
     if rel.name in IGNORED_NAMES or rel.name.startswith(".spawn-ledger"):
         return False
@@ -34,7 +44,6 @@ def producer() -> None:
 
 threading.Thread(target=producer, name="hermes-backup-events", daemon=True).start()
 print(f"Watching {DATA_DIR} for backup-worthy changes (quiet period={QUIET_SECONDS}s).", flush=True)
-
 while True:
     events.get()
     while True:
@@ -42,12 +51,11 @@ while True:
             events.get(timeout=QUIET_SECONDS)
         except queue.Empty:
             break
-
     try:
         result = subprocess.run(
             ["/usr/local/bin/hermes-backup", "save"],
             check=False,
-            timeout=180,
+            timeout=240,
         )
         if result.returncode != 0:
             print(f"Hermes backup exited with status {result.returncode}", flush=True)
