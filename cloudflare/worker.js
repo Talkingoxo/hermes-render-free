@@ -1,4 +1,5 @@
 import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
+import {handleManagement,directModel} from "./manager.js";
 
 const json = (data, status = 200, extra = {}) =>
   new Response(JSON.stringify(data), {
@@ -111,6 +112,18 @@ export class HermesState extends DurableObject {
       ).toArray().reverse();
 
       const requestedModel = body.model || this.env.MODEL_NAME || "";
+      if (/^(openrouter|gemini)(?:\/|$)/.test(requestedModel)) {
+        const r=await directModel(this.env,{model:requestedModel,
+          messages:rows.map(row=>({role:row.role,content:row.content})),
+          stream:false,max_tokens:Math.min(Math.max(Number(body.max_tokens)||512,1),2048)});
+        if(!r.ok)return json({error:"Provider request failed",status:r.status},502);
+        const result=await r.json().catch(()=>({}));
+        const msg=result.choices?.[0]?.message;
+        if(typeof msg?.content!=="string")return json({error:"Provider returned no text"},502);
+        const assistant=this._append("assistant",msg.content,{provider:requestedModel,tool_calls:msg.tool_calls||null});
+        return json({user:userMessage,assistant,usage:result.usage||null});
+      }
+      const wantsOmniRoute = typeof requestedModel === "string" && requestedModel.startsWith("omniroute/");
       const useWorkersAI = Boolean(this.env.AI && !this.env.MODEL_BASE_URL &&
         (!requestedModel || requestedModel === "auto" || requestedModel === "cloudflare" || requestedModel === "workers-ai" || requestedModel.startsWith("@cf/")));
       if (useWorkersAI) {
@@ -127,7 +140,8 @@ export class HermesState extends DurableObject {
         const assistantMessage = this._append("assistant",content,{provider:"workers-ai",model,tool_calls:result?.tool_calls ?? null});
         return json({user:userMessage,assistant:assistantMessage,usage:result?.usage ?? null});
       }
-      const useOmniRoute = !this.env.MODEL_BASE_URL;
+      if(!this.env.MODEL_BASE_URL && !wantsOmniRoute) return json({error:"Use model auto (Cloudflare Workers AI). Additional providers require configuring MODEL_BASE_URL."},503);
+      const useOmniRoute = wantsOmniRoute || !this.env.MODEL_BASE_URL;
       const base = useOmniRoute
         ? `${String(this.env.RENDER_ORIGIN || "").replace(/\/$/, "")}/api/omniroute/v1`
         : String(this.env.MODEL_BASE_URL).replace(/\/$/, "");
@@ -135,7 +149,7 @@ export class HermesState extends DurableObject {
       if (!base) return json({ error: "No model route is configured." }, 503);
       const endpoint = base.endsWith("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
       const payload = {
-        model: body.model || this.env.MODEL_NAME || "auto",
+        model: wantsOmniRoute ? requestedModel.slice("omniroute/".length) : (body.model || this.env.MODEL_NAME || "auto"),
         messages: rows.map((row) => ({ role: row.role, content: row.content })),
         stream: false,
       };
@@ -220,6 +234,52 @@ export class HermesTaskWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const params = typeof event.payload === "string" ? JSON.parse(event.payload) : (event.payload || {});
     const sessionId = params.session_id || event.instanceId;
+    if(params.action==="omniroute_models"){
+      const response=await step.do("OmniRoute models on demand",async()=>{
+        const res=await fetch(this.env.RENDER_ORIGIN+"/api/omniroute/v1/models",{headers:{authorization:"Bearer "+this.env.HERMES_EDGE_TOKEN}});
+        const raw=await res.text();let data;try{data=JSON.parse(raw)}catch{data={error:raw.slice(0,400)}};
+        return {status:res.status,models:(data.data||[]).map(x=>x.id).slice(0,20),error:data.detail||data.error||null};
+      });return {action:"omniroute_models",response};
+    }
+
+    if (params.action === "browser_content") {
+      const result=await step.do("Cloudflare browser on demand",async()=>{
+        if(typeof params.url!=="string")throw Error("URL required");
+        const page=await cloudflareBrowserContent(this.env,params.url);
+        return {title:page.title,url:page.url,text:page.text?.slice(0,3500)};
+      });
+      return {action:"browser_content",response:result};
+    }
+
+    if (params.action === "native_catalog" || params.action === "native_tool") {
+      const action = params.action;
+      const response = await step.do("on-demand Render tool", {
+        retries: {limit: action === "native_tool" ? 0 : 1, delay: "2 seconds"},
+        timeout: "2 minutes",
+      }, async () => {
+        const origin = String(this.env.RENDER_ORIGIN || "").replace(/\/$/, "");
+        if (!origin) throw new Error("Render origin is not configured");
+        const catalog = action === "native_catalog";
+        const target = origin + "/api/plugins/hermes-edge-executor/" + (catalog ? "tools" : "execute");
+        const init = {
+          method: catalog ? "GET" : "POST",
+          headers: {authorization: "Bearer " + this.env.HERMES_EDGE_TOKEN, "content-type": "application/json"},
+        };
+        if (!catalog) {
+          if (typeof params.name !== "string" || !params.name) throw new Error("Native tool name required");
+          init.body = JSON.stringify({name: params.name, arguments: params.arguments || {},
+            session_id: params.session_id || event.instanceId, task_id: event.instanceId});
+        }
+        const res = await fetch(target, init);
+        const raw = await res.text();
+        if (!res.ok) throw new Error("Native tool request failed (" + res.status + "): " + raw.slice(0,800));
+        let parsed; try { parsed = JSON.parse(raw); } catch { throw new Error("Native executor returned non-JSON"); }
+        if (catalog) return {tools: (parsed.tools || []).map(t=>t.function||t).map(t=>({name:t.name,description:t.description,parameters:t.parameters}))};
+        return parsed;
+      });
+      return {action, response};
+    }
+
 
     const response = await step.do(
       "model turn",
@@ -292,7 +352,10 @@ async function proxyModel(request, env) {
   if (!bearerOk(request, env)) return new Response("Unauthorized", { status: 401 });
   const incoming = await request.arrayBuffer();
   const payload = JSON.parse(new TextDecoder().decode(incoming));
+  const direct=await directModel(env,payload);
+  if(direct)return direct;
   const modelRequest = payload.model || env.MODEL_NAME || "";
+  const wantsOmniRoute = typeof modelRequest === "string" && modelRequest.startsWith("omniroute/");
   const useWorkersAI = Boolean(env.AI && !env.MODEL_BASE_URL &&
     (!modelRequest || modelRequest === "auto" || modelRequest === "cloudflare" || modelRequest === "workers-ai" || modelRequest.startsWith("@cf/")));
   if (useWorkersAI) {
@@ -315,7 +378,8 @@ async function proxyModel(request, env) {
     }
     return json(answer);
   }
-  const useOmniRoute = !env.MODEL_BASE_URL;
+  if(!env.MODEL_BASE_URL && !wantsOmniRoute) return json({error:"Use model auto (Cloudflare Workers AI). Additional providers require configuring MODEL_BASE_URL."},503);
+  const useOmniRoute = wantsOmniRoute || !env.MODEL_BASE_URL;
   const base = useOmniRoute
     ? `${String(env.RENDER_ORIGIN || "").replace(/\/$/, "")}/api/omniroute/v1`
     : String(env.MODEL_BASE_URL).replace(/\/$/, "");
@@ -333,7 +397,7 @@ async function proxyModel(request, env) {
   const upstream = await fetch(endpoint, {
     method: "POST",
     headers,
-    body: incoming,
+    body: wantsOmniRoute ? JSON.stringify({...payload, model: modelRequest.slice("omniroute/".length)}) : incoming,
   });
 
   const outHeaders = new Headers(upstream.headers);
@@ -389,6 +453,8 @@ async function cloudflareBrowserContent(env,urlText) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const management=await handleManagement(request,env,url);
+    if(management)return management;
 
     if (url.pathname === "/api/browser/content" && request.method === "POST") {
       if(!bearerOk(request,env))return new Response("Unauthorized",{status:401});
